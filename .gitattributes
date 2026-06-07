@@ -1,0 +1,2 @@
+skills/**/*.md filter=git-crypt diff=git-crypt
+skills/**/*.txt filter=git-crypt diff=git-crypt
