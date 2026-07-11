@@ -1,0 +1,130 @@
+name: Sync skills to claude.ai
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'skills/**'
+  workflow_dispatch:
+    inputs:
+      org:
+        description: 'Target org (personal / team / both)'
+        required: false
+        default: 'personal'
+      dry_run:
+        description: 'Dry run (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  decrypt:
+    runs-on: ubuntu-latest
+    outputs:
+      skills-changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Install git-crypt
+        run: sudo apt-get install -y git-crypt
+
+      - name: Decrypt skills
+        env:
+          GIT_CRYPT_KEY: ${{ secrets.GIT_CRYPT_KEY }}
+        run: |
+          echo "$GIT_CRYPT_KEY" | base64 -d > /tmp/git-crypt-key
+          git-crypt unlock /tmp/git-crypt-key
+          rm /tmp/git-crypt-key
+
+      - name: Check claude.ai skill upload budget
+        run: |
+          BUDGET=152
+          COUNT=$(find skills -name "SKILL.md" -not -path "*/skills-archive/*" | wc -l)
+          echo "Skills: $COUNT"
+          if [ "$COUNT" -gt "$BUDGET" ]; then
+            echo "❌ Skill count $COUNT exceeds claude.ai upload budget $BUDGET"
+            echo "This check runs here (not in claude-global) because claude-skills is what actually syncs to claude.ai."
+            exit 1
+          fi
+          echo "✅ Skill count $COUNT within claude.ai upload budget $BUDGET"
+
+      - name: Detect changed skills
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=all" >> $GITHUB_OUTPUT
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'skills/**' | grep 'SKILL.md' | sed 's|skills/||' | sed 's|/SKILL.md||' | tr '\n' ' ')
+            echo "changed=${CHANGED:-none}" >> $GITHUB_OUTPUT
+            echo "Changed skills: ${CHANGED:-none}"
+          fi
+
+      - name: Upload decrypted skills
+        uses: actions/upload-artifact@v4
+        with:
+          name: decrypted-skills
+          path: skills/
+          retention-days: 1
+
+  sync-personal:
+    runs-on: ubuntu-latest
+    needs: decrypt
+    if: |
+      needs.decrypt.outputs.skills-changed != 'none' &&
+      (github.event.inputs.org == 'personal' || github.event.inputs.org == 'both' || github.event.inputs.org == '')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download decrypted skills
+        uses: actions/download-artifact@v4
+        with:
+          name: decrypted-skills
+          path: skills/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Sync to Personal
+        env:
+          CLAUDE_SESSION_KEY_PERSONAL: ${{ secrets.CLAUDE_SESSION_KEY_PERSONAL }}
+          CLAUDE_ORG_PERSONAL: ${{ vars.CLAUDE_ORG_PERSONAL }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python scripts/sync.py --org personal $DRY_RUN_FLAG
+
+  sync-team:
+    runs-on: ubuntu-latest
+    needs: decrypt
+    if: |
+      needs.decrypt.outputs.skills-changed != 'none' &&
+      (github.event.inputs.org == 'team' || github.event.inputs.org == 'both')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download decrypted skills
+        uses: actions/download-artifact@v4
+        with:
+          name: decrypted-skills
+          path: skills/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Sync to Team
+        env:
+          CLAUDE_SESSION_KEY_TEAM: ${{ secrets.CLAUDE_SESSION_KEY_TEAM }}
+          CLAUDE_ORG_TEAM: ${{ vars.CLAUDE_ORG_TEAM }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python scripts/sync.py --org team $DRY_RUN_FLAG
