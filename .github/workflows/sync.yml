@@ -37,6 +37,18 @@ jobs:
           git-crypt unlock /tmp/git-crypt-key
           rm /tmp/git-crypt-key
 
+      - name: Check claude.ai skill upload budget
+        run: |
+          BUDGET=152
+          COUNT=$(find skills -name "SKILL.md" -not -path "*/skills-archive/*" | wc -l)
+          echo "Skills: $COUNT"
+          if [ "$COUNT" -gt "$BUDGET" ]; then
+            echo "❌ Skill count $COUNT exceeds claude.ai upload budget $BUDGET"
+            echo "This check runs here (not in claude-global) because claude-skills is what actually syncs to claude.ai."
+            exit 1
+          fi
+          echo "✅ Skill count $COUNT within claude.ai upload budget $BUDGET"
+
       - name: Detect changed skills
         id: detect
         run: |
